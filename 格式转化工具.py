@@ -18,8 +18,7 @@ date_format = "%Y-%m-%d %H:%M:%S"
 logging.basicConfig(filename='app.log',level=logging.INFO,format=log_format,datefmt=date_format)
 
 
-class readLog(QObject):
-    log_sign = Signal(str)
+class readLog():
     start_point = 0
     def __init__(self):
         super().__init__()
@@ -32,7 +31,7 @@ class readLog(QObject):
             file.seek(self.start_point,1)
             log_connect = file.read()
             self.start_point = file.tell()
-            self.log_sign.emit(log_connect)
+        return log_connect
 
 #---------搜索音频文件,创建对应保存路径-----------
 def search_files(root_path,save_path,all_files = []):
@@ -111,11 +110,7 @@ class tsfTread(QThread):
 
 # 自定义信号源对象类型，一定要继承自QObject
 class MySignals(QObject):
-
     # 调用 emit方法 发信号时，传入参数，必须是这里指定的 参数类型
-
-    output_sign = Signal()
-
     path_checked = Signal(str)
     file_searched = Signal(str,list)
 
@@ -125,7 +120,6 @@ class Stats(QWidget):
     def __init__(self):
         super().__init__()
         # 从文件中加载UI定义
-
         # 从 UI 定义中动态 创建一个相应的窗口对象
         # 注意：里面的控件对象也成为窗口对象的属性了
         # 比如 self.ui.button , self.ui.textEdit
@@ -133,26 +127,24 @@ class Stats(QWidget):
         self.ui.pgbar.setRange(0,100)
         self.ui.pgbar.setValue(0)
 
-        self.ms = MySignals()
-        self.tsft = tsfTread()
-        self.timer = QTimer()
-        self.timer.start(500)
+        self.ms = MySignals()   #自定义信号类
+        self.tsft = tsfTread()  #格式转换类
+        self.logthread = readLog()  #读取日志
+        self.timer = QTimer()   #计时器，每隔500ms读一次日志
 
-        self.ui.tsfBtn.clicked.connect(self.showInvalidPathDialog)
-        self.ui.file_pbtn.clicked.connect(self.selectFilePath)
-        self.ui.file_pbtn_2.clicked.connect(self.selectFilePath)
+        self.ui.tsfBtn.clicked.connect(self.showInvalidPathDialog)  #转换按钮按下后，先检查路径、选项是否合法
+        self.ui.file_pbtn.clicked.connect(self.selectFilePath)  #可以通过文件选择框输入文件路径
+        self.ui.file_pbtn_2.clicked.connect(self.selectFilePath)#可以通过文件选择框输入文件路径
 
-        self.ms.path_checked.connect(self.file_search)
-        self.ms.file_searched.connect(self.tsfFun)
-        self.ms.output_sign.connect(self.outputControl)
+        self.ms.path_checked.connect(self.file_search)  #检查完合法后，搜索路径下的所有音频文件，并将源文件结构复制到保存路径下
+        self.ms.file_searched.connect(self.tsfFun)  #搜索完文件后，调用格式转换线程
 
-        self.tsft.pgbar_sign.connect(self.refreshBar)
-        self.tsft.tsf_end_sign.connect(self.success_tsf)
+        self.tsft.pgbar_sign.connect(self.refreshBar)   #进度条更新
+        self.tsft.tsf_end_sign.connect(self.success_tsf)    #转换完毕弹出成功窗口
 
-        self.timer.timeout.connect(self.work_log_thread)
+        self.timer.timeout.connect(self.outputControl)  #计时器，每500ms读取日志并打印控制台
 
-        self.logthread = readLog()
-        self.logthread.log_sign.connect(self.outputControl)
+        self.timer.start(500)   #计时器启动
 
         logging.info('===app启动===')
 
@@ -166,10 +158,8 @@ class Stats(QWidget):
             if os.path.exists(self.root_path):  #and os.path.exists(self.save_path)
                 if self.ui.p2w_rbtn.isChecked():
                     self.ms.path_checked.emit('p2w')
-
                 elif self.ui.w2p_rbtn.isChecked():
                     self.ms.path_checked.emit('w2p')
-
                 else:
                     QMessageBox.information(self.ui,'未选中','未选择需要转换类型',QMessageBox.Close)
                     return
@@ -202,14 +192,13 @@ class Stats(QWidget):
         elif sender.objectName() == 'file_pbtn_2':
             self.ui.savePath.setText(path)
 
+    # 运行格式转换线程
     def tsfFun(self, type, all_files):
         logging.info('====格式转换开始====')
 
         self.tsft.set_param(all_files,self.root_path, self.save_path, type)
         self.tsft.start()
 
-        # self.ms.pgbar_sign.emit(count,total)
-        # self.ms.tsf_end_sign.emit()
         return
 
     # 完成时的弹窗
@@ -218,13 +207,13 @@ class Stats(QWidget):
         # self.logthread.quit()
         QMessageBox.information(self.ui, "完成", "已经完成格式转换", QMessageBox.Close)
 
-    def work_log_thread(self):
-        self.logthread.main()
-
     # 读取日志文件并写入控制台
-    def outputControl(self,log_connect):
-        self.ui.outputControl.append(log_connect)
+    def outputControl(self):
+        log_connect = self.logthread.main().decode("utf-8",errors="ignore")
+        if log_connect != '':
+            self.ui.outputControl.append(log_connect)
 
+    # 进度条更新
     def refreshBar(self,num,total):
         self.ui.pgbar.setValue((num/total)*100)
 
