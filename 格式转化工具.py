@@ -17,22 +17,22 @@ log_format = "%(asctime)s - %(levelname)s - %(message)s"
 date_format = "%Y-%m-%d %H:%M:%S"
 logging.basicConfig(filename='app.log',level=logging.INFO,format=log_format,datefmt=date_format)
 
-class readLog(QThread):
+
+class readLog(QObject):
     log_sign = Signal(str)
     start_point = 0
     def __init__(self):
         super().__init__()
         with open('app.log', 'rb') as file:
+            file.seek(0, 2)
             self.start_point = file.tell()
 
-    def run(self):
-        while True:
-            time.sleep(0.5)
-            with open('app.log','rb') as file:
-                file.seek(self.start_point,1)
-                log_connect = file.read()
-                self.start_point = file.tell()
-                self.log_sign.emit(log_connect)
+    def main(self):
+        with open('app.log','rb') as file:
+            file.seek(self.start_point,1)
+            log_connect = file.read()
+            self.start_point = file.tell()
+            self.log_sign.emit(log_connect)
 
 #---------搜索音频文件,创建对应保存路径-----------
 def search_files(root_path,save_path,all_files = []):
@@ -54,25 +54,27 @@ def search_files(root_path,save_path,all_files = []):
 
 # 转换格式的线程
 class tsfTread(QThread):
-    work_tsf_sign = Signal()
+    pgbar_sign = Signal(int, int)
+    tsf_end_sign = Signal()
 
     def __init__(self):
         super().__init__()
 
-    def set_param(self,file, copy_path, type):
-        self.file_path = file
-        self.copy_path = copy_path
+    def set_param(self,all_files,root_path, save_path, type):
+        self.all_files = all_files
+        self.root_path = root_path
+        self.save_path = save_path
         self.type = type
 
     # pcm转wav格式，单声道，采样精度，采样率
-    def pcm2wav(self, channels=1, bits=16, sample_rate=16000):
-        with open(self.file_path, 'rb') as f:
+    def pcm2wav(self,file_path,copy_path, channels=1, bits=16, sample_rate=16000):
+        with open(file_path, 'rb') as f:
             pcmdata = f.read()
 
         if bits % 8 != 0:
             raise ValueError("bits % 8 must == 0. now bits:" + str(bits))
 
-        wavfile = wave.open(self.copy_path, 'wb')
+        wavfile = wave.open(copy_path, 'wb')
         wavfile.setnchannels(channels)
         wavfile.setsampwidth(bits // 8)
         wavfile.setframerate(sample_rate)
@@ -81,34 +83,41 @@ class tsfTread(QThread):
         return
 
     # wav转pcm格式
-    def wav2pcm(self, data_type=np.int16):
-        with open(self.file_path, 'rb') as f:
+    def wav2pcm(self,file_path,copy_path, data_type=np.int16):
+        with open(file_path, 'rb') as f:
             f.seek(0)
             f.read(44)
             data = np.fromfile(f, dtype=data_type)
-            data.tofile(self.copy_path)
+            data.tofile(copy_path)
         return
 
     def run(self):
-        logging.info(f'正在转换{self.file_path}')
-        time.sleep(1)
-        if self.type == 'p2w':
-            self.pcm2wav()
-        elif self.type == 'w2p':
-            self.wav2pcm()
-        logging.info('转换完成')
+        total = len(self.all_files)
+        count = 0
+        for file_path in self.all_files:
+            count += 1
+            logging.info(f'正在转换{file_path}')
+            time.sleep(1)
+            if self.type == 'p2w':
+                copy_path = file_path.replace(self.root_path, self.save_path)[:-4] + '.wav'
+                self.pcm2wav(file_path,copy_path)
+            elif self.type == 'w2p':
+                copy_path = file_path.replace(self.root_path, self.save_path)[:-4] + '.pcm'
+                self.wav2pcm(file_path,copy_path)
+            logging.info('转换完成')
+            self.pgbar_sign.emit(count, total)
+        self.tsf_end_sign.emit()
         return
 
 # 自定义信号源对象类型，一定要继承自QObject
 class MySignals(QObject):
 
     # 调用 emit方法 发信号时，传入参数，必须是这里指定的 参数类型
-    tsf_end_sign = Signal()
+
     output_sign = Signal()
-    pgbar_sign = Signal(int,int)
+
     path_checked = Signal(str)
     file_searched = Signal(str,list)
-
 
 
 class Stats(QWidget):
@@ -120,27 +129,30 @@ class Stats(QWidget):
         # 从 UI 定义中动态 创建一个相应的窗口对象
         # 注意：里面的控件对象也成为窗口对象的属性了
         # 比如 self.ui.button , self.ui.textEdit
-        self.ui = QUiLoader().load('ui/格式转换ui.ui')
+        self.ui = QUiLoader().load('格式转换ui.ui')
         self.ui.pgbar.setRange(0,100)
         self.ui.pgbar.setValue(0)
 
         self.ms = MySignals()
         self.tsft = tsfTread()
+        self.timer = QTimer()
+        self.timer.start(500)
 
         self.ui.tsfBtn.clicked.connect(self.showInvalidPathDialog)
-        # self.ui.file_pbtn.clicked.connect(self.selectFilePath,'rootPath')
         self.ui.file_pbtn.clicked.connect(self.selectFilePath)
         self.ui.file_pbtn_2.clicked.connect(self.selectFilePath)
+
         self.ms.path_checked.connect(self.file_search)
         self.ms.file_searched.connect(self.tsfFun)
-        self.ms.tsf_end_sign.connect(self.success_tsf)
         self.ms.output_sign.connect(self.outputControl)
-        self.ms.pgbar_sign.connect(self.refreshBar)
+
+        self.tsft.pgbar_sign.connect(self.refreshBar)
+        self.tsft.tsf_end_sign.connect(self.success_tsf)
+
+        self.timer.timeout.connect(self.work_log_thread)
 
         self.logthread = readLog()
         self.logthread.log_sign.connect(self.outputControl)
-        self.ui.tsfBtn.clicked.connect(self.work_log_thread)
-
 
         logging.info('===app启动===')
 
@@ -192,29 +204,22 @@ class Stats(QWidget):
 
     def tsfFun(self, type, all_files):
         logging.info('====格式转换开始====')
-        total = len(all_files)
-        count = 0
-        for file in all_files:
-            count += 1
 
-            copy_path = file.replace(self.root_path, self.save_path)[:-4]+'.wav'
-            self.tsft.set_param(file, copy_path, type)
-            self.tsft.start()
-            self.ms.pgbar_sign.emit(count,total)
+        self.tsft.set_param(all_files,self.root_path, self.save_path, type)
+        self.tsft.start()
 
-        # self.outputControl(self.outputQueue)
-        self.ms.tsf_end_sign.emit()
+        # self.ms.pgbar_sign.emit(count,total)
+        # self.ms.tsf_end_sign.emit()
         return
-
 
     # 完成时的弹窗
     def success_tsf(self):
         logging.info('已完成\n')
-        self.logthread.quit()
+        # self.logthread.quit()
         QMessageBox.information(self.ui, "完成", "已经完成格式转换", QMessageBox.Close)
 
     def work_log_thread(self):
-        self.logthread.start()
+        self.logthread.main()
 
     # 读取日志文件并写入控制台
     def outputControl(self,log_connect):
@@ -222,7 +227,6 @@ class Stats(QWidget):
 
     def refreshBar(self,num,total):
         self.ui.pgbar.setValue((num/total)*100)
-
 
 
 if __name__ == '__main__':
